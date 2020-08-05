@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 
-use git_starter_rust::blob::read_blob;
+use git_starter_rust::blob::{read_blob, hash_file};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -16,6 +16,12 @@ fn main() {
             println!("command usage: cat-file -p <blob-sha>")
         } else {
             read_blob(&args[3]);
+        }
+    } else if args[1] == "hash-file" && args[2] == "-w" {
+        if args.len() < 3 {
+            println!("command usage: hash-file -w <file-name>")
+        } else {
+            hash_file(&args[3]);
         }
     }
 }
