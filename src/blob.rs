@@ -16,9 +16,9 @@ pub fn read_blob(blob_sha: &String) -> () {
         // strip blob meta data about size
         // http://shafiul.github.io/gitbook/1_the_git_object_model.html
         if let Some(i) = s.find('\x00') {
-            println!("{}", &s[i + 1..s.len() - 1]);
+            print!("{}", &s[i + 1..]);
         } else {
-            println!("{}", &s[..s.len() - 1]);
+            print!("{}", s);
         }
     } else {
         println!("blob {} does not exist.", blob_sha);
