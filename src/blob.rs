@@ -12,7 +12,14 @@ pub fn read_blob(blob_sha: &String) -> () {
         let mut z = ZlibDecoder::new(&bytes[..]);
         let mut s = String::new();
         z.read_to_string(&mut s).expect("cannot read blob");
-        println!("{}", s);
+
+        // strip blob meta data about size
+        // http://shafiul.github.io/gitbook/1_the_git_object_model.html
+        if let Some(i) = s.find('\x00') {
+            println!("{}", &s[i+1..]);
+        } else {
+            println!("{}", s);
+        }
     } else {
         println!("blob {} does not exist.", blob_sha);
     }
