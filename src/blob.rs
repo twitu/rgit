@@ -33,7 +33,7 @@ pub fn read_blob(blob_sha: &String) -> () {
     }
 }
 
-pub fn hash_file(file_path: &String) -> () {
+pub fn hash_object(file_path: &String) -> () {
     let path = PathBuf::from(file_path);
     if !path.is_file() {
         println!("file {} does not exist", file_path);
@@ -52,23 +52,23 @@ pub fn hash_file(file_path: &String) -> () {
         let result: [u8; 20] = hasher.finalize().into();
         let mut sha_val = String::with_capacity(result.len() * 2);
         for byte in &result {
-            write!(sha_val, "{:02x}", byte);
+            write!(sha_val, "{:02x}", byte).unwrap();
         }
 
         // compress data with zlib encoding
         let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
-        z.write_all(&data);
+        z.write_all(&data).unwrap();
         let compressed = z.finish().unwrap();
 
         // create path for storing blob
         let blob_dir = &sha_val[0..2];
         let blob_file = &sha_val[2..];
         let blob_path: PathBuf = [".git", "objects", blob_dir, blob_file].iter().collect();
-        create_dir_all(blob_path.parent().unwrap());
+        create_dir_all(blob_path.parent().unwrap()).unwrap();
         let mut file = File::create(blob_path).unwrap();
-        file.write_all(&compressed);
+        file.write_all(&compressed).unwrap();
 
         // print sha to std out
-        println!("{}", sha_val);
+        print!("{}", sha_val);
     }
 }
