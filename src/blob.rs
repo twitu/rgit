@@ -11,10 +11,15 @@ use std::path::PathBuf;
 use std::fmt::Write as _;
 use std::io::Write as _;
 
-pub fn read_blob(blob_sha: &String) -> () {
-    let dir = &blob_sha[0..2];
-    let file = &blob_sha[2..];
+fn create_path_from_sha(sha: &String) -> PathBuf {
+    let dir = &sha[0..2];
+    let file = &sha[2..];
     let path: PathBuf = [".git", "objects", dir, file].iter().collect();
+    path
+}
+
+pub fn read_blob(blob_sha: &String) {
+    let path = create_path_from_sha(blob_sha);
 
     if let Ok(bytes) = read(path) {
         let mut z = ZlibDecoder::new(&bytes[..]);
@@ -61,14 +66,40 @@ pub fn hash_object(file_path: &String) -> () {
         let compressed = z.finish().unwrap();
 
         // create path for storing blob
-        let blob_dir = &sha_val[0..2];
-        let blob_file = &sha_val[2..];
-        let blob_path: PathBuf = [".git", "objects", blob_dir, blob_file].iter().collect();
+        let blob_path = create_path_from_sha(&sha_val);
         create_dir_all(blob_path.parent().unwrap()).unwrap();
         let mut file = File::create(blob_path).unwrap();
         file.write_all(&compressed).unwrap();
 
         // print sha to std out
         print!("{}", sha_val);
+    }
+}
+
+pub fn read_tree_object(tree_sha: &String) -> () {
+    let tree_path = create_path_from_sha(tree_sha);
+
+    if let Ok(bytes) = read(tree_path) {
+        // split bytes by null terminating characters
+        let mut z = ZlibDecoder::new(&bytes[..]);
+        let mut data: Vec<u8> = Vec::new();
+        z.read_to_end(&mut data).unwrap();
+
+        // skip meta data
+        let mut cur_index = data.iter().position(|u| *u == '\x00' as u8).unwrap() + 1;
+
+        // iterate over file names
+        while let Some(next_index) = data[cur_index..].iter().position(|u| *u == '\x00' as u8) {
+            let file_str = std::str::from_utf8(&data[cur_index..cur_index + next_index]).unwrap();
+            let name = file_str.split(' ').last().unwrap();
+            println!("{}", name);
+
+            cur_index = cur_index + next_index + 21;  // skip sha
+            if cur_index >= data.len() {
+                break
+            }
+        }
+    } else {
+        println!("Could not find object for sha {}", tree_sha);
     }
 }

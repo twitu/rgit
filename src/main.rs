@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 
-use git_starter_rust::blob::{read_blob, hash_object};
+use git_starter_rust::blob::{hash_object, read_blob, read_tree_object};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -22,6 +22,12 @@ fn main() {
             println!("command usage: hash-object -w <file-name>")
         } else {
             hash_object(&args[3]);
+        }
+    } else if args[1] == "ls-tree" && args[2] == "--name-only" {
+        if args.len() < 3 {
+            println!("command usage: ls-tree --name-only <tree-sha>")
+        } else {
+            read_tree_object(&args[3]);
         }
     }
 }
