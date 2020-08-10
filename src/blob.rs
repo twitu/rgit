@@ -5,6 +5,7 @@ use sha1::{Digest, Sha1};
 use std::fs::{create_dir_all, read, File};
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 // hack to import both Writes
 // https://stackoverflow.com/questions/59187608/can-i-use-write-and-file-write-all-in-same-fn
@@ -107,9 +108,9 @@ pub fn read_tree_object(tree_sha: &String) -> () {
             let name = file_str.split(' ').last().unwrap();
             println!("{}", name);
 
-            cur_index = cur_index + next_index + 21;  // skip sha
+            cur_index = cur_index + next_index + 21; // skip sha
             if cur_index >= data.len() {
-                break
+                break;
             }
         }
     } else {
@@ -139,7 +140,7 @@ pub fn write_tree_object(dir_path: &str) -> Option<[u8; 20]> {
                                 contents.push(TreeObject {
                                     is_file: true,
                                     name,
-                                    sha_val
+                                    sha_val,
                                 })
                             }
                         } else if value.is_dir() {
@@ -147,7 +148,7 @@ pub fn write_tree_object(dir_path: &str) -> Option<[u8; 20]> {
                                 contents.push(TreeObject {
                                     is_file: false,
                                     name,
-                                    sha_val
+                                    sha_val,
                                 })
                             }
                         }
@@ -168,6 +169,9 @@ pub fn write_tree_object(dir_path: &str) -> Option<[u8; 20]> {
             let line = if content.is_file {
                 format!("100644 {}\x00", content.name)
             } else {
+                // git writes 40000 as access mode
+                // this is different from 040000 which is displayed on
+                // running `cat-file`
                 format!("40000 {}\x00", content.name)
             };
             let mut line = line.into_bytes();
@@ -181,4 +185,29 @@ pub fn write_tree_object(dir_path: &str) -> Option<[u8; 20]> {
         let sha_val = write_blob(blob_data);
         Some(sha_val)
     }
+}
+
+pub fn create_commit(
+    tree_sha: &String,
+    parent_sha: &String,
+    message: &String,
+) -> Option<[u8; 20]> {
+    let time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let offset = String::from("+0530");
+    let content = if parent_sha.is_empty() {
+        format!("tree {}\nauthor Alias Anon <a@a.com> {} {}\ncommiter Alias Anon <a@a.com> {} {}\n\n{}\n", tree_sha, time, offset, time, offset, message)
+    } else {
+        format!("tree {}\nparent {}\nauthor Alias Anon <a@a.com> {} {}\ncommiter Alias Anon <a@a.com> {} {}\n\n{}\n", tree_sha, parent_sha, time, offset, time, offset, message)
+    };
+
+    let content = content.into_bytes();
+    let meta_data = format!("commit {}\x00", content.len().to_string());
+    let mut blob_data = meta_data.into_bytes();
+    blob_data.extend(content);
+
+    let sha_val = write_blob(blob_data);
+    Some(sha_val)
 }

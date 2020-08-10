@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 
-use git_starter_rust::blob::{hash_object, read_blob, read_tree_object, write_tree_object, create_sha_string};
+use git_starter_rust::blob::{hash_object, read_blob, read_tree_object, write_tree_object, create_sha_string, create_commit};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -36,6 +36,13 @@ fn main() {
     } else if args[1] == "write-tree" {
         let dir_path = env::current_dir().unwrap();
         if let Some(sha_val) = write_tree_object(dir_path.to_str().unwrap()) {
+            println!("{}", create_sha_string(&sha_val));
+        }
+    } else if args[1] == "commit-tree" && args[3] == "-p" && args[5] == "-m" {
+        let tree_sha = args[2].clone();
+        let parent_sha = args[4].clone();
+        let message = args[6].clone();
+        if let Some(sha_val) = create_commit(&tree_sha, &parent_sha, &message) {
             println!("{}", create_sha_string(&sha_val));
         }
     }
