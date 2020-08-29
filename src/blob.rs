@@ -26,14 +26,6 @@ struct Blob {
 }
 
 impl Blob {
-    // create new blob from given content
-    pub fn new(blob_type: BlobType, sha_val: [u8; 20], content: Vec<u8>) -> Self {
-        Blob {
-            blob_type,
-            sha_val,
-            content,
-        }
-    }
 
     // create blob from data
     pub fn new_blob_from_data(data: Vec<u8>, blob_type: BlobType) -> Self {
@@ -62,8 +54,15 @@ impl Blob {
         }
     }
 
-    // create blob from contents of file
+    // create blob from blob object
     pub fn new_blob_from_file(path: &PathBuf, blob_type: BlobType) -> Self {
+        let bytes = read(path).unwrap();
+        Blob::new_blob_from_data(bytes, blob_type)
+    }
+
+    // create blob from blob object
+    pub fn new_blob_from_blob_file(blob_sha: &String, blob_type: BlobType) -> Self {
+        let path = get_path(blob_sha);
         let bytes = read(path).unwrap();
 
         let mut z = ZlibDecoder::new(&bytes[..]);
@@ -111,8 +110,7 @@ fn get_path(sha: &str) -> PathBuf {
 
 // create blob from file contents
 pub fn read_blob(blob_sha: &String) -> String {
-    let path = get_path(blob_sha);
-    let blob = Blob::new_blob_from_file(&path, BlobType::BLOB);
+    let blob = Blob::new_blob_from_blob_file(blob_sha, BlobType::BLOB);
     let data = String::from_utf8(blob.content).unwrap();
 
     // strip header before returning
@@ -123,15 +121,13 @@ pub fn read_blob(blob_sha: &String) -> String {
 // create blob from file, write to disk and return sha1 hash
 pub fn hash_object(file_path: &str) -> String {
     let path = PathBuf::from(file_path);
-    let bytes = read(path).unwrap();
-    let blob = Blob::new_blob_from_data(bytes, BlobType::BLOB);
+    let blob = Blob::new_blob_from_file(&path, BlobType::BLOB);
     blob.write_blob();
     blob.get_sha_string()
 }
 
 pub fn read_tree_object(tree_sha: &String) -> String {
-    let tree_path = get_path(tree_sha);
-    let blob = Blob::new_blob_from_file(&tree_path, BlobType::TREE);
+    let blob = Blob::new_blob_from_blob_file(tree_sha, BlobType::TREE);
     let data = blob.content;
     let mut names: String = String::new();
 
@@ -156,7 +152,7 @@ pub fn read_tree_object(tree_sha: &String) -> String {
 
 pub fn create_tree_object(dir_path: &str) -> String {
     let path = PathBuf::from(dir_path);
-    let blob = write_tree_object(&path);
+    let blob = write_tree_object(&path).unwrap();  // dir should not be empty
     blob.get_sha_string()
 }
 
@@ -166,7 +162,7 @@ struct TreeObject {
     sha_val: [u8; 20],
 }
 
-fn write_tree_object(path: &PathBuf) -> Blob {
+fn write_tree_object(path: &PathBuf) -> Option<Blob> {
     let mut contents = Vec::<TreeObject>::new();
 
     // iterate over directory and write blobs for files and directories recursively
@@ -188,41 +184,45 @@ fn write_tree_object(path: &PathBuf) -> Blob {
                 is_file: true,
                 name,
                 sha_val,
-            })
+            });
         } else if value.is_dir() {
-            let blob = write_tree_object(&path);
-            let sha_val = blob.sha_val;
-            blob.write_blob();
+            if let Some(blob) = write_tree_object(&path) {
+                let sha_val = blob.sha_val;
+                blob.write_blob();
 
-            contents.push(TreeObject {
-                is_file: false,
-                name,
-                sha_val,
-            })
+                contents.push(TreeObject {
+                    is_file: false,
+                    name,
+                    sha_val,
+                });
+            }
         }
     }
 
-    // assume directory is not empty
-    contents.sort_by(|o1, o2| o1.name.cmp(&o2.name));
+    if contents.is_empty() {
+        None
+    } else {
+        contents.sort_by(|o1, o2| o1.name.cmp(&o2.name));
 
-    let mut blob_content: Vec<u8> = Vec::new();
-    for content in contents {
-        let line = if content.is_file {
-            format!("100644 {}\x00", content.name)
-        } else {
-            // git writes 40000 as access mode
-            // this is different from 040000 which is displayed on
-            // running `cat-file`
-            format!("40000 {}\x00", content.name)
-        };
-        let mut line = line.into_bytes();
-        line.extend(content.sha_val.iter());
-        blob_content.extend(line);
+        let mut blob_content: Vec<u8> = Vec::new();
+        for content in contents {
+            let line = if content.is_file {
+                format!("100644 {}\x00", content.name)
+            } else {
+                // git writes 40000 as access mode
+                // this is different from 040000 which is displayed on
+                // running `cat-file`
+                format!("40000 {}\x00", content.name)
+            };
+            let mut line = line.into_bytes();
+            line.extend(content.sha_val.iter());
+            blob_content.extend(line);
+        }
+
+        let blob = Blob::new_blob_from_data(blob_content, BlobType::TREE);
+        blob.write_blob();
+        Some(blob)
     }
-
-    let blob = Blob::new_blob_from_data(blob_content, BlobType::TREE);
-    blob.write_blob();
-    blob
 }
 
 pub fn create_commit(tree_sha: &String, parent_sha: &String, message: &String) -> String {
