@@ -3,6 +3,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use sha1::{Digest, Sha1};
 use std::fs::{create_dir_all, read, File};
+use std::io::Cursor;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -12,110 +13,151 @@ use std::time::SystemTime;
 use std::fmt::Write as _;
 use std::io::Write as _;
 
-fn create_path_from_sha(sha: &String) -> PathBuf {
+enum BlobType {
+    BLOB,
+    TREE,
+    COMMIT,
+}
+
+struct Blob {
+    blob_type: BlobType,
+    sha_val: [u8; 20],
+    content: Vec<u8>,
+}
+
+impl Blob {
+    // create new blob from given content
+    pub fn new(blob_type: BlobType, sha_val: [u8; 20], content: Vec<u8>) -> Self {
+        Blob {
+            blob_type,
+            sha_val,
+            content,
+        }
+    }
+
+    // create blob from data
+    pub fn new_blob_from_data(data: Vec<u8>, blob_type: BlobType) -> Self {
+        let mut header: Vec<u8> = match blob_type {
+            BlobType::BLOB => format!("blob {}\x00", data.len().to_string()).into_bytes(),
+            BlobType::TREE => format!("tree {}\x00", data.len().to_string()).into_bytes(),
+            BlobType::COMMIT => format!("commit {}\x00", data.len().to_string()).into_bytes(),
+        };
+        header.extend(data);
+        let with_header = header;
+
+        // hash data with sha1
+        let mut hasher = Sha1::new();
+        hasher.update(&with_header);
+        let sha_val: [u8; 20] = hasher.finalize().into();
+
+        // compress data with zlib encoding
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+        z.write_all(&with_header).unwrap();
+        let content = z.finish().unwrap();
+
+        Blob {
+            blob_type,
+            sha_val,
+            content,
+        }
+    }
+
+    // create blob from contents of file
+    pub fn new_blob_from_file(path: &PathBuf, blob_type: BlobType) -> Self {
+        let bytes = read(path).unwrap();
+
+        let mut z = ZlibDecoder::new(&bytes[..]);
+        let mut content = Vec::new();
+        z.read_to_end(&mut content).expect("cannot read blob");
+
+        let mut hasher = Sha1::new();
+        hasher.update(&content);
+        let sha_val: [u8; 20] = hasher.finalize().into();
+
+        Blob {
+            blob_type,
+            sha_val,
+            content,
+        }
+    }
+
+    // convert compressed sha to ascii string
+    fn get_sha_string(&self) -> String {
+        let mut sha_str = String::with_capacity(self.sha_val.len() * 2);
+        for byte in &self.sha_val {
+            write!(sha_str, "{:02x}", byte).unwrap();
+        }
+
+        sha_str
+    }
+
+    // create path and store blob content
+    pub fn write_blob(&self) {
+        let blob_path = get_path(&self.get_sha_string());
+        create_dir_all(blob_path.parent().unwrap()).unwrap();
+        let mut file = File::create(blob_path).unwrap();
+        file.write_all(&self.content).unwrap();
+        file.flush().unwrap();
+    }
+}
+
+// get storage path for blob
+fn get_path(sha: &str) -> PathBuf {
     let dir = &sha[0..2];
     let file = &sha[2..];
     let path: PathBuf = [".git", "objects", dir, file].iter().collect();
     path
 }
 
-pub fn create_sha_string(sha: &[u8]) -> String {
-    let mut sha_str = String::with_capacity(sha.len() * 2);
-    for byte in sha {
-        write!(sha_str, "{:02x}", byte).unwrap();
-    }
+// create blob from file contents
+pub fn read_blob(blob_sha: &String) -> String {
+    let path = get_path(blob_sha);
+    let blob = Blob::new_blob_from_file(&path, BlobType::BLOB);
+    let data = String::from_utf8(blob.content).unwrap();
 
-    sha_str
+    // strip header before returning
+    let i = data.find('\x00').unwrap();
+    data[i + 1..].to_owned()
 }
 
-/// compress , hash and write blob to file
-/// return sha1 hash of blob
-fn write_blob(content: Vec<u8>) -> [u8; 20] {
-    // hash data with sha1
-    let mut hasher = Sha1::new();
-    hasher.update(&content);
-    let result: [u8; 20] = hasher.finalize().into();
-    let sha_val = create_sha_string(&result);
-
-    // compress data with zlib encoding
-    let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
-    z.write_all(&content).unwrap();
-    let compressed = z.finish().unwrap();
-
-    // create path for storing blob
-    let blob_path = create_path_from_sha(&sha_val);
-    create_dir_all(blob_path.parent().unwrap()).unwrap();
-    let mut file = File::create(blob_path).unwrap();
-    file.write_all(&compressed).unwrap();
-
-    result
-}
-
-pub fn read_blob(blob_sha: &String) -> Option<String> {
-    let path = create_path_from_sha(blob_sha);
-
-    if let Ok(bytes) = read(path) {
-        let mut z = ZlibDecoder::new(&bytes[..]);
-        let mut s = String::new();
-        z.read_to_string(&mut s).expect("cannot read blob");
-
-        // strip blob meta data about size
-        // http://shafiul.github.io/gitbook/1_the_git_object_model.html
-        if let Some(i) = s.find('\x00') {
-            Some(s[i + 1..].to_owned())
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-pub fn hash_object(file_path: &str) -> Option<[u8; 20]> {
+// create blob from file, write to disk and return sha1 hash
+pub fn hash_object(file_path: &str) -> String {
     let path = PathBuf::from(file_path);
-    if !path.is_file() {
-        println!("file {} does not exist", file_path);
-    }
-
-    if let Ok(bytes) = read(path) {
-        // add meta data to file content
-        let mut data = format!("blob {}\x00", bytes.len().to_string()).into_bytes();
-        data.extend(bytes);
-
-        // hash data with sha1
-        let sha_val = write_blob(data);
-        Some(sha_val)
-    } else {
-        None
-    }
+    let bytes = read(path).unwrap();
+    let blob = Blob::new_blob_from_data(bytes, BlobType::BLOB);
+    blob.write_blob();
+    blob.get_sha_string()
 }
 
-pub fn read_tree_object(tree_sha: &String) -> () {
-    let tree_path = create_path_from_sha(tree_sha);
+pub fn read_tree_object(tree_sha: &String) -> String {
+    let tree_path = get_path(tree_sha);
+    let blob = Blob::new_blob_from_file(&tree_path, BlobType::TREE);
+    let data = blob.content;
+    let mut names: String = String::new();
 
-    if let Ok(bytes) = read(tree_path) {
-        // split bytes by null terminating characters
-        let mut z = ZlibDecoder::new(&bytes[..]);
-        let mut data: Vec<u8> = Vec::new();
-        z.read_to_end(&mut data).unwrap();
+    // skip meta data
+    let mut cur_index = data.iter().position(|u| *u == '\x00' as u8).unwrap() + 1;
 
-        // skip meta data
-        let mut cur_index = data.iter().position(|u| *u == '\x00' as u8).unwrap() + 1;
+    // iterate over file names
+    while let Some(next_index) = data[cur_index..].iter().position(|u| *u == '\x00' as u8) {
+        let file_str = std::str::from_utf8(&data[cur_index..cur_index + next_index]).unwrap();
+        let name = file_str.split(' ').last().unwrap();
+        names.push_str(name);
+        names.push('\n');
 
-        // iterate over file names
-        while let Some(next_index) = data[cur_index..].iter().position(|u| *u == '\x00' as u8) {
-            let file_str = std::str::from_utf8(&data[cur_index..cur_index + next_index]).unwrap();
-            let name = file_str.split(' ').last().unwrap();
-            println!("{}", name);
-
-            cur_index = cur_index + next_index + 21; // skip sha
-            if cur_index >= data.len() {
-                break;
-            }
+        cur_index = cur_index + next_index + 21; // skip sha
+        if cur_index >= data.len() {
+            break;
         }
-    } else {
-        println!("Could not find object for sha {}", tree_sha);
     }
+
+    names
+}
+
+pub fn create_tree_object(dir_path: &str) -> String {
+    let path = PathBuf::from(dir_path);
+    let blob = write_tree_object(&path);
+    blob.get_sha_string()
 }
 
 struct TreeObject {
@@ -124,74 +166,66 @@ struct TreeObject {
     sha_val: [u8; 20],
 }
 
-pub fn write_tree_object(dir_path: &str) -> Option<[u8; 20]> {
-    let path = PathBuf::from(dir_path);
-    let mut contents: Vec<TreeObject> = Vec::new();
+fn write_tree_object(path: &PathBuf) -> Blob {
+    let mut contents = Vec::<TreeObject>::new();
 
-    if path.is_dir() {
-        for entry in path.read_dir().unwrap() {
-            if let Ok(dir_entry) = entry {
-                if let Ok(value) = dir_entry.file_type() {
-                    let name = dir_entry.file_name().to_str().unwrap().to_string();
-                    let path = dir_entry.path().to_str().unwrap().to_string();
-                    if !name.starts_with(".") {
-                        if value.is_file() {
-                            if let Some(sha_val) = hash_object(&path) {
-                                contents.push(TreeObject {
-                                    is_file: true,
-                                    name,
-                                    sha_val,
-                                })
-                            }
-                        } else if value.is_dir() {
-                            if let Some(sha_val) = write_tree_object(&path) {
-                                contents.push(TreeObject {
-                                    is_file: false,
-                                    name,
-                                    sha_val,
-                                })
-                            }
-                        }
-                    }
-                }
-            }
+    // iterate over directory and write blobs for files and directories recursively
+    for entry in path.read_dir().unwrap() {
+        let dir_entry = entry.unwrap();
+        let value = dir_entry.file_type().unwrap();
+        let name = dir_entry.file_name().to_str().unwrap().to_string();
+        let path = dir_entry.path();
+        if name.starts_with(".") {
+            continue;
+        }
+
+        if value.is_file() {
+            let blob = Blob::new_blob_from_file(&path, BlobType::BLOB);
+            let sha_val = blob.sha_val;
+            blob.write_blob();
+
+            contents.push(TreeObject {
+                is_file: true,
+                name,
+                sha_val,
+            })
+        } else if value.is_dir() {
+            let blob = write_tree_object(&path);
+            let sha_val = blob.sha_val;
+            blob.write_blob();
+
+            contents.push(TreeObject {
+                is_file: false,
+                name,
+                sha_val,
+            })
         }
     }
 
-    if contents.is_empty() {
-        None
-    } else {
-        contents.sort_by(|o1, o2| o1.name.cmp(&o2.name));
+    // assume directory is not empty
+    contents.sort_by(|o1, o2| o1.name.cmp(&o2.name));
 
-        // TODO: sha is stored in hex representation
-        let mut blob_content: Vec<u8> = Vec::new();
-        for content in contents {
-            let line = if content.is_file {
-                format!("100644 {}\x00", content.name)
-            } else {
-                // git writes 40000 as access mode
-                // this is different from 040000 which is displayed on
-                // running `cat-file`
-                format!("40000 {}\x00", content.name)
-            };
-            let mut line = line.into_bytes();
-            line.extend(content.sha_val.iter());
-            blob_content.extend(line);
-        }
-        let meta_data = format!("tree {}\x00", blob_content.len().to_string());
-        let mut blob_data = meta_data.into_bytes();
-        blob_data.extend(blob_content);
-
-        let sha_val = write_blob(blob_data);
-        Some(sha_val)
+    let mut blob_content: Vec<u8> = Vec::new();
+    for content in contents {
+        let line = if content.is_file {
+            format!("100644 {}\x00", content.name)
+        } else {
+            // git writes 40000 as access mode
+            // this is different from 040000 which is displayed on
+            // running `cat-file`
+            format!("40000 {}\x00", content.name)
+        };
+        let mut line = line.into_bytes();
+        line.extend(content.sha_val.iter());
+        blob_content.extend(line);
     }
+
+    let blob = Blob::new_blob_from_data(blob_content, BlobType::TREE);
+    blob.write_blob();
+    blob
 }
 
-pub fn create_commit(
-    tree_sha: &String,
-    parent_sha: &String,
-    message: &String,
-) -> Option<[u8; 20]> {
+pub fn create_commit(tree_sha: &String, parent_sha: &String, message: &String) -> String {
     let time = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
@@ -204,10 +238,7 @@ pub fn create_commit(
     };
 
     let content = content.into_bytes();
-    let meta_data = format!("commit {}\x00", content.len().to_string());
-    let mut blob_data = meta_data.into_bytes();
-    blob_data.extend(content);
-
-    let sha_val = write_blob(blob_data);
-    Some(sha_val)
+    let blob = Blob::new_blob_from_data(content, BlobType::COMMIT);
+    blob.write_blob();
+    blob.get_sha_string()
 }
